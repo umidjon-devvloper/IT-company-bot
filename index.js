@@ -3,35 +3,42 @@ const TelegramBot = require("node-telegram-bot-api");
 const connectDB = require("./config/db");
 const Survey = require("./models/Survey");
 const User = require("./models/User");
+const Entrepreneur = require("./models/Entrepreneur");
 const questions = require("./questions");
 
 connectDB();
 
 const bot = new TelegramBot(process.env.BOT_TOKEN, { polling: true });
 
-// ─── Qo'llanma matni ─────────────────────────────────────────────────────────
+// ─── HTML escape ──────────────────────────────────────────────────────────────
+function esc(text) {
+  return String(text || "")
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;");
+}
 
-const GUIDE_TEXT = `📋 *SO'ROVNOMA QOIDALARI*
+// ─── Qo'llanma ───────────────────────────────────────────────────────────────
+const GUIDE_TEXT = `📋 <b>SO'ROVNOMA QOIDALARI</b>
 
 Assalomu alaykum! Ushbu bot orqali so'rovnomani to'ldirishingiz mumkin.
 
-*Qanday ishlaydi:*
-1️⃣ \`/start\` bosing — botni ishga tushiradi
-2️⃣ *"▶️ Boshlash"* tugmasini bosing
-3️⃣ Har bir savolga javob variantlaridan birini tanlang (A, B, C yoki D)
-4️⃣ 10-savol matn ko'rinishida — fikr-mulohazangizni yozing va yuboring
-5️⃣ So'rovnoma tugagach rahmat xabari keladi ✅
+<b>Qanday ishlaydi:</b>
+1️⃣ /start bosing — botni ishga tushiradi
+2️⃣ INN (STIR) raqamingizni yuboring
+3️⃣ <b>▶️ Boshlash</b> tugmasini bosing
+4️⃣ Har bir savolga javob variantlaridan birini tanlang (A, B, C yoki D)
+5️⃣ 10-savol matn ko'rinishida — fikr-mulohazangizni yozing va yuboring
+6️⃣ So'rovnoma tugagach rahmat xabari keladi ✅
 
-*Muhim:*
+<b>Muhim:</b>
+• Faqat ro'yxatdagi tadbirkorlar ishtirok eta oladi
 • Savollarni o'tkazib bo'lmaydi
 • Bir marta to'ldirilgandan keyin qayta to'ldirish mumkin emas
-• Agar xato bosilsa bot o'z-o'zidan keyingisiga o'tadi
 
-*Muammo bo'lsa:* \`/start\` bosing — davom ettiradi 🔄`;
+<b>Muammo bo'lsa:</b> /start bosing — davom ettiradi 🔄`;
 
-// ─── Helpers ────────────────────────────────────────────────────────────────
-
-// Buttonlar faqat A B C D — bitta qatorda
+// ─── Helpers ──────────────────────────────────────────────────────────────────
 function buildInlineKeyboard(options) {
   return {
     inline_keyboard: [
@@ -43,7 +50,6 @@ function buildInlineKeyboard(options) {
   };
 }
 
-// Savol matni + variant matnlari xabarda to'liq ko'rinadi
 function buildQuestionText(question) {
   const optLines = question.options
     .map((o) => `${o.label}) ${o.text}`)
@@ -54,7 +60,6 @@ function buildQuestionText(question) {
 async function sendQuestion(chatId, questionIndex) {
   const question = questions[questionIndex];
   if (!question) return;
-
   if (question.type === "choice") {
     const sent = await bot.sendMessage(chatId, buildQuestionText(question), {
       reply_markup: buildInlineKeyboard(question.options),
@@ -78,7 +83,7 @@ async function deleteMessage(chatId, messageId) {
 async function sendAndPinGuide(chatId) {
   try {
     const sent = await bot.sendMessage(chatId, GUIDE_TEXT, {
-      parse_mode: "Markdown",
+      parse_mode: "HTML",
     });
     await bot.pinChatMessage(chatId, sent.message_id, {
       disable_notification: true,
@@ -86,8 +91,7 @@ async function sendAndPinGuide(chatId) {
   } catch (e) {}
 }
 
-// ─── /start command ──────────────────────────────────────────────────────────
-
+// ─── /start ───────────────────────────────────────────────────────────────────
 bot.onText(/\/start/, async (msg) => {
   const chatId = msg.chat.id;
   const username = msg.from.username || "";
@@ -109,8 +113,9 @@ bot.onText(/\/start/, async (msg) => {
       { upsert: true, returnDocument: "after" },
     );
 
-    let survey = await Survey.findOne({ chatId });
+    const survey = await Survey.findOne({ chatId });
 
+    // Tugatgan
     if (survey && survey.completed) {
       return bot.sendMessage(
         chatId,
@@ -118,30 +123,40 @@ bot.onText(/\/start/, async (msg) => {
       );
     }
 
-    if (survey && !survey.completed) {
+    // INN tasdiqlangan, so'rovnoma davom etmoqda
+    if (survey && !survey.completed && survey.innVerified) {
       await bot.sendMessage(
         chatId,
-        `So'rovnomani davom ettiramiz, ${firstName}...`,
+        `So'rovnomani davom ettiramiz, ${esc(firstName)}...`,
       );
       const msgId = await sendQuestion(chatId, survey.currentQuestion - 1);
       survey.lastMessageId = msgId;
+      // state ni DB ga ham yozamiz
+      survey.state = "in_survey";
       await survey.save();
       return;
     }
 
+    // Yangi yoki INN tasdiqlanmagan — INN so'raymiz
+    // Survey yo'q bo'lsa yaratamiz (state = waiting_inn)
+    if (!survey) {
+      await Survey.create({
+        chatId,
+        username,
+        firstName,
+        state: "waiting_inn",
+      });
+    } else {
+      // INN tasdiqlanmagan, qayta so'raymiz
+      await Survey.updateOne({ chatId }, { $set: { state: "waiting_inn" } });
+    }
+
     await sendAndPinGuide(chatId);
-    survey = await Survey.create({ chatId, username, firstName });
 
     await bot.sendMessage(
       chatId,
-      `Assalomu alaykum, ${firstName}!\n\nSo'rovnomaga xush kelibsiz. Ishtirok etish uchun quyidagi tugmani bosing.`,
-      {
-        reply_markup: {
-          inline_keyboard: [
-            [{ text: "▶️ Boshlash", callback_data: "start_survey" }],
-          ],
-        },
-      },
+      `Assalomu alaykum, ${esc(firstName)}! 👋\n\nSo'rovnomada ishtirok etish uchun <b>INN (STIR) raqamingizni</b> yuboring:`,
+      { parse_mode: "HTML" },
     );
   } catch (err) {
     console.error("/start error:", err);
@@ -152,14 +167,12 @@ bot.onText(/\/start/, async (msg) => {
   }
 });
 
-// ─── /qollanma command ───────────────────────────────────────────────────────
-
+// ─── /qollanma ────────────────────────────────────────────────────────────────
 bot.onText(/\/qollanma/, async (msg) => {
-  await bot.sendMessage(msg.chat.id, GUIDE_TEXT, { parse_mode: "Markdown" });
+  await bot.sendMessage(msg.chat.id, GUIDE_TEXT, { parse_mode: "HTML" });
 });
 
-// ─── Callback query handler ──────────────────────────────────────────────────
-
+// ─── Callback query ───────────────────────────────────────────────────────────
 bot.on("callback_query", async (query) => {
   const chatId = query.message.chat.id;
   const data = query.data;
@@ -173,6 +186,9 @@ bot.on("callback_query", async (query) => {
       if (!survey || survey.completed) return;
 
       await deleteMessage(chatId, messageId);
+      survey.state = "in_survey";
+      await survey.save();
+
       const newMsgId = await sendQuestion(chatId, 0);
       survey.lastMessageId = newMsgId;
       await survey.save();
@@ -182,7 +198,6 @@ bot.on("callback_query", async (query) => {
     if (data.startsWith("ans_")) {
       const selectedOption = data.replace("ans_", "");
       const survey = await Survey.findOne({ chatId });
-
       if (!survey || survey.completed) return;
 
       const currentIndex = survey.currentQuestion - 1;
@@ -215,38 +230,84 @@ bot.on("callback_query", async (query) => {
   }
 });
 
-// ─── Text message handler (question 10) ──────────────────────────────────────
-
+// ─── Message handler ──────────────────────────────────────────────────────────
 bot.on("message", async (msg) => {
   if (!msg.text || msg.text.startsWith("/")) return;
 
   const chatId = msg.chat.id;
+  const text = msg.text.trim();
 
   try {
     const survey = await Survey.findOne({ chatId });
     if (!survey || survey.completed) return;
 
-    const currentQuestion = questions[survey.currentQuestion - 1];
-    if (!currentQuestion || currentQuestion.type !== "text") return;
+    // ── INN kutilmoqda (state DB dan o'qiladi) ──
+    if (survey.state === "waiting_inn") {
+      await deleteMessage(chatId, msg.message_id);
 
-    await deleteMessage(chatId, survey.lastMessageId);
-    await deleteMessage(chatId, msg.message_id);
+      if (!/^\d{9}$/.test(text)) {
+        return bot.sendMessage(
+          chatId,
+          "⚠️ INN noto'g'ri formatda. INN 9 ta raqamdan iborat bo'lishi kerak.\n\nQaytadan yuboring:",
+        );
+      }
 
-    survey.answers[`q${currentQuestion.id}`] = msg.text.trim();
-    survey.currentQuestion += 1;
-    await survey.save();
+      const entrepreneur = await Entrepreneur.findOne({ inn: text });
 
-    await finishSurvey(chatId, survey);
+      if (!entrepreneur) {
+        return bot.sendMessage(
+          chatId,
+          `❌ <b>${esc(text)}</b> INN raqami ro'yxatda topilmadi.\n\nIltimos, to'g'ri INN raqamini yuboring:`,
+          { parse_mode: "HTML" },
+        );
+      }
+
+      // INN topildi — surveiga saqlаymiz
+      survey.inn = text;
+      survey.innVerified = true;
+      survey.entrepreneurId = entrepreneur._id;
+      survey.state = "inn_confirmed";
+      await survey.save();
+
+      await bot.sendMessage(
+        chatId,
+        `✅ <b>INN tasdiqlandi!</b>\n\n🏢 <b>Korxona:</b> ${esc(entrepreneur.companyName)}\n📍 <b>Tuman:</b> ${esc(entrepreneur.districtName)}\n🏘 <b>MFY:</b> ${esc(entrepreneur.mfyName)}\n\nSo'rovnomani boshlash uchun tugmani bosing:`,
+        {
+          parse_mode: "HTML",
+          reply_markup: {
+            inline_keyboard: [
+              [{ text: "▶️ Boshlash", callback_data: "start_survey" }],
+            ],
+          },
+        },
+      );
+      return;
+    }
+
+    // ── 10-savol matn javobi ──
+    if (survey.state === "in_survey") {
+      const currentQuestion = questions[survey.currentQuestion - 1];
+      if (!currentQuestion || currentQuestion.type !== "text") return;
+
+      await deleteMessage(chatId, survey.lastMessageId);
+      await deleteMessage(chatId, msg.message_id);
+
+      survey.answers[`q${currentQuestion.id}`] = text;
+      survey.currentQuestion += 1;
+      await survey.save();
+
+      await finishSurvey(chatId, survey);
+    }
   } catch (err) {
     console.error("message handler error:", err);
   }
 });
 
-// ─── Finish survey ───────────────────────────────────────────────────────────
-
+// ─── Finish survey ────────────────────────────────────────────────────────────
 async function finishSurvey(chatId, survey) {
   try {
     survey.completed = true;
+    survey.state = "done";
     await survey.save();
     await bot.sendMessage(
       chatId,
