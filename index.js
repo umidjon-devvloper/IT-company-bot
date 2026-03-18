@@ -284,6 +284,7 @@ bot.on("message", async (msg) => {
       return;
     }
 
+    
     // ── 10-savol matn javobi ──
     if (survey.state === "in_survey") {
       const currentQuestion = questions[survey.currentQuestion - 1];
