@@ -1,7 +1,7 @@
 const mongoose = require("mongoose");
 
 const surveySchema = new mongoose.Schema({
-  chatId: { type: Number, required: true, unique: true },
+  chatId: { type: Number, required: true, index: true },
   username: { type: String, default: "" },
   firstName: { type: String, default: "" },
 
@@ -26,9 +26,6 @@ const surveySchema = new mongoose.Schema({
     q5: { type: String, default: null },
     q6: { type: String, default: null },
     q7: { type: String, default: null },
-    q8: { type: String, default: null },
-    q9: { type: String, default: null },
-    q10: { type: String, default: null },
   },
   currentQuestion: { type: Number, default: 1 },
   lastMessageId: { type: Number, default: null },

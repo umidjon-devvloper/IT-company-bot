@@ -6,7 +6,16 @@ const User = require("./models/User");
 const Entrepreneur = require("./models/Entrepreneur");
 const questions = require("./questions");
 
-connectDB();
+connectDB().then(async () => {
+  // Eski chatId unique cheklovini olib tashlaymiz —
+  // bitta odam istalgancha INN orqali so'rovnomadan o'ta olishi uchun.
+  try {
+    await Survey.collection.dropIndex("chatId_1");
+    console.log("Eski chatId unique indeksi o'chirildi");
+  } catch (e) {
+    // Indeks mavjud bo'lmasa, e'tiborsiz qoldiramiz
+  }
+});
 
 const bot = new TelegramBot(process.env.BOT_TOKEN, { polling: true });
 
@@ -28,13 +37,13 @@ Assalomu alaykum! Ushbu bot orqali so'rovnomani to'ldirishingiz mumkin.
 2️⃣ INN (STIR) raqamingizni yuboring
 3️⃣ <b>▶️ Boshlash</b> tugmasini bosing
 4️⃣ Har bir savolga javob variantlaridan birini tanlang (A, B, C yoki D)
-5️⃣ 10-savol matn ko'rinishida — fikr-mulohazangizni yozing va yuboring
+5️⃣ 7-savol matn ko'rinishida — fikr-mulohazangizni yozing va yuboring
 6️⃣ So'rovnoma tugagach rahmat xabari keladi ✅
 
 <b>Muhim:</b>
 • Faqat ro'yxatdagi tadbirkorlar ishtirok eta oladi
 • Savollarni o'tkazib bo'lmaydi
-• Bir marta to'ldirilgandan keyin qayta to'ldirish mumkin emas
+• So'rovnomani turli INN raqamlari uchun bir necha marta to'ldirishingiz mumkin
 
 <b>Muammo bo'lsa:</b> /start bosing — davom ettiradi 🔄`;
 
@@ -113,18 +122,14 @@ bot.onText(/\/start/, async (msg) => {
       { upsert: true, returnDocument: "after" },
     );
 
-    const survey = await Survey.findOne({ chatId });
-
-    // Tugatgan
-    if (survey && survey.completed) {
-      return bot.sendMessage(
-        chatId,
-        "Siz so'rovnomani allaqachon to'ldirgansiz. Rahmat! 🎉",
-      );
-    }
+    // Faqat tugallanmagan (faol) so'rovnomani olamiz.
+    // Tugatilgan so'rovnomalar saqlanib qoladi — yangi INN uchun yangisi yaratiladi.
+    const survey = await Survey.findOne({ chatId, completed: false }).sort({
+      createdAt: -1,
+    });
 
     // INN tasdiqlangan, so'rovnoma davom etmoqda
-    if (survey && !survey.completed && survey.innVerified) {
+    if (survey && survey.innVerified) {
       await bot.sendMessage(
         chatId,
         `So'rovnomani davom ettiramiz, ${esc(firstName)}...`,
@@ -148,7 +153,10 @@ bot.onText(/\/start/, async (msg) => {
       });
     } else {
       // INN tasdiqlanmagan, qayta so'raymiz
-      await Survey.updateOne({ chatId }, { $set: { state: "waiting_inn" } });
+      await Survey.updateOne(
+        { _id: survey._id },
+        { $set: { state: "waiting_inn" } },
+      );
     }
 
     await sendAndPinGuide(chatId);
@@ -182,8 +190,10 @@ bot.on("callback_query", async (query) => {
 
   try {
     if (data === "start_survey") {
-      const survey = await Survey.findOne({ chatId });
-      if (!survey || survey.completed) return;
+      const survey = await Survey.findOne({ chatId, completed: false }).sort({
+        createdAt: -1,
+      });
+      if (!survey) return;
 
       await deleteMessage(chatId, messageId);
       survey.state = "in_survey";
@@ -197,8 +207,10 @@ bot.on("callback_query", async (query) => {
 
     if (data.startsWith("ans_")) {
       const selectedOption = data.replace("ans_", "");
-      const survey = await Survey.findOne({ chatId });
-      if (!survey || survey.completed) return;
+      const survey = await Survey.findOne({ chatId, completed: false }).sort({
+        createdAt: -1,
+      });
+      if (!survey) return;
 
       const currentIndex = survey.currentQuestion - 1;
       const currentQuestion = questions[currentIndex];
@@ -238,8 +250,10 @@ bot.on("message", async (msg) => {
   const text = msg.text.trim();
 
   try {
-    const survey = await Survey.findOne({ chatId });
-    if (!survey || survey.completed) return;
+    const survey = await Survey.findOne({ chatId, completed: false }).sort({
+      createdAt: -1,
+    });
+    if (!survey) return;
 
     // ── INN kutilmoqda (state DB dan o'qiladi) ──
     if (survey.state === "waiting_inn") {
